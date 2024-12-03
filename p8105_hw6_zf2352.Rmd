@@ -11,6 +11,8 @@ library(readr)
 library(dplyr)
 library(broom)
 library(purrr)
+library(ggplot2)
+library(modelr)
 library(p8105.datasets)
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -201,3 +203,92 @@ ggplot(city_or_results, aes(x = odds_ratio,
 The odds ratios range from 0.28 to 2.1 approximately. Cities with odds ratios less than 1 (e.g., Albuquerque, NM) indicate that male victims are less likely to have their homicides solved compared to female victims. Cities with odds ratios greater than 1 (e.g., New York, NY) indicate that male victims are more likely to have their homicides solved compared to female victims. 
 
 A few cities have extreme odds ratios (e.g., New York, NY), suggesting unique dynamics in homicide resolution for male vs. female victims.
+
+# Problem 3
+
+```{r message=FALSE}
+birthweight <- read_csv("birthweight.csv", na = c("NA", ".", "")) %>% 
+  janitor::clean_names() 
+```
+
+```{r message=FALSE}
+str(birthweight)
+sum(is.na(birthweight))
+
+birthweight <- birthweight %>%
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("Male", "Female")),
+    malform = factor(malform, levels = c(0, 1), labels = c("Absent", "Present")),
+    frace = factor(frace, levels = c(1, 2, 3, 4, 8, 9),
+                   labels = c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
+    mrace = factor(mrace, levels = c(1, 2, 3, 4, 8),
+                   labels = c("White", "Black", "Asian", "Puerto Rican", "Other"))
+  )
+```
+
+I hypothesize that variables including gestational age, mother’s weight gain during pregnancy, baby’s sex, mother’s age, and smoking habits influence birthweight. So I will build regression model based on these factors first.
+
+```{r}
+birthweight_model <- lm(
+  bwt ~ gaweeks + wtgain + smoken + babysex + momage,
+  data = birthweight
+)
+
+summary(birthweight_model)
+
+birthweight <- birthweight %>%
+  add_predictions(birthweight_model) %>%
+  add_residuals(birthweight_model)
+
+ggplot(birthweight, aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values (Predicted Birthweight)",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+
+The spread of residuals appears fairly consistent across the range of fitted values, suggesting no significant heteroscedasticity. A few residuals are far from 0, which might indicate outliers or influential points worth investigating.
+
+
+Compare my model to two others:
+
+```{r}
+model_formulas <- list(
+  model1 = bwt ~ gaweeks + wtgain + smoken + babysex + momage,
+  model2 = bwt ~ blength + gaweeks,
+  model3 = bwt ~ bhead + blength + babysex + bhead * blength * babysex  
+)
+```
+
+```{r}
+set.seed(123)  
+cv_data <- crossv_mc(birthweight, 100)
+
+cv_results <- cv_data %>%
+  mutate(
+    models = map(train, ~ map(model_formulas, lm, data = as.data.frame(.x))),
+    
+    rmse = map2(models, test, function(model_list, test_set) {
+      map_dbl(model_list, function(model) {
+        test_set <- as.data.frame(test_set)
+        pred <- predict(model, newdata = test_set)
+        sqrt(mean((test_set$bwt - pred)^2)) 
+      })
+    })
+  )
+
+rmse_summary <- cv_results %>%
+  unnest_longer(rmse) %>%
+  mutate(model = rep(names(model_formulas), times = nrow(cv_data))) %>%  
+  group_by(model) %>%
+  summarize(mean_rmse = mean(rmse), sd_rmse = sd(rmse))
+
+print(rmse_summary)
+```
+
+Among these three models, the model using head circumference, length, sex, and all interactions has the lowest mean score of RMSE, indicating it has the best predictive performance.
+
