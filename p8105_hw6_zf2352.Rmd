@@ -7,8 +7,10 @@ output: github_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
+library(readr)
 library(dplyr)
 library(broom)
+library(purrr)
 library(p8105.datasets)
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -97,6 +99,7 @@ ggplot(bootstrap_results1, aes(x = r.squared)) +
   theme_minimal()
 ```
 
+The distribution appears symmetric and approximately bell-shaped, resembling a normal distribution.This suggests that the variability of $R^2$ values is consistent across the bootstrap samples. The distribution is centered around $R^2$ values between 0.90 and 0.92, indicating that the model consistently explains about 90-92% of the variance in the response variable across resamples.
 
 ```{r}
 ggplot(bootstrap_results2, aes(x = log_beta)) +
@@ -109,3 +112,92 @@ ggplot(bootstrap_results2, aes(x = log_beta)) +
   theme_minimal()
 ```
 
+The distribution is symmetric and bell-shaped, closely resembling a normal distribution. This indicates that the variability in `log_beta` estimates across bootstrap samples is relatively consistent and unbiased. The expected log-transformed product of the coefficients is approximately 2.
+	
+# Problem 2
+
+```{r}
+homicide_data <- read_csv("homicide-data.csv")
+```
+
+```{r warning=FALSE}
+homicide_data = homicide_data %>%
+  mutate(city_state = paste(city, state, sep = ", ")) %>% 
+  mutate(is_solved = ifelse(disposition == "Closed by arrest", 1, 0)) %>% 
+  filter(
+    !(city_state %in% c("Dallas, TX", "Phoenix, AZ", 
+                        "Kansas City, MO", "Tulsa, AL"))
+  ) %>%
+  filter(victim_race %in% c("White", "Black")) %>%
+  mutate(victim_age = as.numeric(victim_age)) %>%
+  filter(!is.na(victim_age))
+```
+
+```{r}
+baltimore_data = homicide_data %>%
+  filter(city_state == "Baltimore, MD")
+
+logistic_model <- glm(
+  is_solved ~ victim_age + victim_sex + victim_race,
+  data = baltimore_data,
+  family = binomial(link = "logit")  
+)
+
+model_summary <- broom::tidy(
+  logistic_model, 
+  conf.int = TRUE,     
+  conf.level = 0.95    
+)
+
+odds_ratio <- model_summary %>%
+  filter(term == "victim_sexMale") %>%
+  mutate(
+    odds_ratio = exp(estimate),  
+    lower_ci = exp(conf.low),   
+    upper_ci = exp(conf.high)    
+  ) 
+
+odds_ratio %>% 
+  select(odds_ratio:upper_ci) %>% 
+  knitr::kable(digits = 3)
+```
+
+```{r warning=FALSE}
+city_or_results <- homicide_data %>%
+  group_by(city_state) %>%  
+  nest() %>%  
+  mutate(
+    model = map(data, ~ glm(is_solved ~ victim_sex + victim_age + victim_race,
+                            data = .x, family = binomial(link = "logit"))), 
+    tidy_model = purrr::map(model, ~ broom::tidy(.x, conf.int = TRUE, 
+                                          conf.level = 0.95)) 
+  ) %>%
+  unnest(tidy_model) %>%  
+  filter(term == "victim_sexMale") %>%  
+  mutate(
+    odds_ratio = exp(estimate),  
+    lower_ci = exp(conf.low),    
+    upper_ci = exp(conf.high)    
+  ) %>%
+  select(city_state, odds_ratio, lower_ci, upper_ci, p.value)  
+
+print(city_or_results)
+```
+
+```{r}
+ggplot(city_or_results, aes(x = odds_ratio, 
+                            y = reorder(city_state, odds_ratio))) +
+  geom_point(color = "blue", size = 3) + 
+  geom_errorbarh(aes(xmin = lower_ci, xmax = upper_ci), height = 0.2, color = "black") +  
+  labs(
+    title = "Estimated Odds Ratios (ORs) and Confidence Intervals (CIs) by City",
+    x = "Odds Ratio (log scale)",
+    y = "City"
+  ) +
+  scale_x_log10() + 
+  theme_minimal()
+```
+
+The odds ratios range from 0.28 to 2.1 approximately. Cities with odds ratios less than 1 (e.g., Albuquerque, NM) indicate that male victims are less likely to have their homicides solved compared to female victims. Cities with odds ratios greater than 1 (e.g., New York, NY) indicate that male victims are more likely to have their homicides solved compared to female victims. 
+
+A few cities have extreme odds ratios (e.g., New York, NY), suggesting unique dynamics in homicide resolution for male vs. female victims.
